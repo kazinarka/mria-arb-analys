@@ -51,6 +51,60 @@ channel** that bypasses the public mempool — meaning the privileged
 submission path is something the operator has access to and can use through
 arbitrary signing keys.
 
+### 0.2.1 Reverse-engineering of the router program
+
+Dumping the bytecode of `AN225ksocfZpbPVEbwffiANbtUdYbySM3WJ6dbsYAqij`
+from the program-data PDA and parsing its ELF reveals several things the
+operator did not intend to be public:
+
+**The complete list of integrated DEX modules** (leaked through Rust's
+panic-site source-path strings preserved even in release builds):
+
+```
+src/dex/dex_raydium_cl.rs       Raydium CLMM
+src/dex/dex_raydium_lpv4.rs     Raydium AMM v4
+src/dex/dex_raydium_cpmm.rs     Raydium CPMM
+src/dex/dex_orca_whirlpool_v2.rs Orca Whirlpools
+src/dex/dex_orca_token_swap_v2.rs Orca v1
+src/dex/dex_meteora_dlmm.rs     Meteora DLMM
+src/dex/dex_meteora_pools.rs    Meteora classic Pools
+src/dex/dex_meteora_damm_v2.rs  Meteora DAMM v2  (NEW)
+src/dex/dex_pump_swap.rs        PumpSwap AMM
+src/dex/dex_saber_stable_swap.rs Saber
+src/dex/dex_saros_amm.rs        Saros AMM
+src/dex/dex_fusion.rs           Fusion AMM       (= fUSioN9YKKSa…)
+src/dex/dex_humidifi.rs         HumidFi          (= 9H6tua7jkLh… the largest unknown)
+src/dex/dex_bizonfi.rs          BiSoNFi          (= BiSoNHVpsVZ…)
+src/dex/dex_token_mill_v2.rs    Token Mill v2    (NEW)
+```
+
+**Architecture is custom no-std, not Anchor.** The exported entrypoint is
+704 bytes (88 SBPF instructions), the program is `#[no_std]` with only 8
+dynamic symbols (entrypoint, custom_panic, 6 syscalls). Dispatch uses
+**small-integer tags** (1,824 `JEQ_IMM` in .text), not 8-byte Anchor
+sighashes — a deliberate ~5-10k CU saving per tx vs the Anchor default.
+
+**DEX program IDs are NOT hardcoded.** Only System Program and wSOL mint
+appear as 32-byte sequences in the binary. Every DEX program ID the router
+invokes is passed by the client in the tx's account-meta list. **This is
+the architectural reason new venues like Tessera, GoonFi, and ZeroFi can
+be added to the bot's repertoire without redeploying the program** — only
+the off-chain client needs to learn the new venue, the on-chain executor
+is venue-agnostic.
+
+**Build environment leak:** `/Users/runner/work/platform-tools/...` paths
+in `.rodata` confirm the program is compiled in a **GitHub Actions macOS
+runner** using the official Solana platform-tools toolchain. Real CI/CD,
+not a one-shot dev build.
+
+**Code shape:** ~44,027 SBPF instructions, ≥79 distinct functions, 484
+internal call sites, 4,183 conditional branches. A non-trivial codebase
+(comparable in size to Jupiter Aggregator v6) with substantial per-DEX
+logic and slippage guards.
+
+The fuller breakdown including the SBPF opcode-frequency analysis and the
+inferred runtime architecture is in `REVERSE_ENGINEERING.md`.
+
 ### 0.3 The router program is self-published, self-upgraded
 
 `AN225ksocfZpbPVEbwffiANbtUdYbySM3WJ6dbsYAqij` (the outermost program in
